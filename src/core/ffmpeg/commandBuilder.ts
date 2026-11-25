@@ -259,11 +259,7 @@ export function buildFFmpegCommand(options: {
       const inputIdx = nextInputIdx;
       nextInputIdx += 1;
 
-      if (item.type === "image") {
-        inputArgs.push("-loop", "1", "-t", dur.toFixed(3), "-i", memfsName);
-      } else {
-        inputArgs.push("-i", memfsName);
-      }
+      inputArgs.push("-i", memfsName);
 
       // Visual pipeline for video/image
       if (item.type === "video" || item.type === "image") {
@@ -283,7 +279,7 @@ export function buildFFmpegCommand(options: {
             `setpts=PTS-STARTPTS+${start.toFixed(3)}/TB`
           );
         } else {
-          vFilters.push(`setpts=PTS-STARTPTS+${start.toFixed(3)}/TB`);
+          vFilters.push("setpts=0");
         }
 
         vFilters.push(
@@ -308,8 +304,12 @@ export function buildFFmpegCommand(options: {
         const inBase = `base${videoStep}`;
         const outBase = `base${videoStep + 1}`;
         videoStep += 1;
+        const eofMode =
+          item.type === "image"
+            ? "eof_action=repeat:shortest=0"
+            : "eof_action=pass";
         filterParts.push(
-          `[${inBase}][${vClipLabel}]overlay=x=${Math.round(item.x)}-overlay_w/2:y=${Math.round(item.y)}-overlay_h/2:enable='between(t,${start.toFixed(3)},${end.toFixed(3)})':eof_action=pass[${outBase}]`
+          `[${inBase}][${vClipLabel}]overlay=x=${Math.round(item.x)}-overlay_w/2:y=${Math.round(item.y)}-overlay_h/2:enable='between(t,${start.toFixed(3)},${end.toFixed(3)})':${eofMode}[${outBase}]`
         );
       }
 

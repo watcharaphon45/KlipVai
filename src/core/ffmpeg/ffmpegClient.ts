@@ -28,6 +28,59 @@ export interface ExportJobHandle {
   cancel: () => void;
 }
 
+async function optimizeImageBlobForExport(
+  blob: Blob,
+  asset: MediaAsset,
+  maxDimension = 1920
+): Promise<Blob> {
+  if (
+    asset.type !== "image" ||
+    typeof document === "undefined" ||
+    typeof createImageBitmap !== "function"
+  ) {
+    return blob;
+  }
+
+  let bitmap: ImageBitmap | null = null;
+  try {
+    bitmap = await createImageBitmap(blob);
+    if (bitmap.width <= maxDimension && bitmap.height <= maxDimension) {
+      return blob;
+    }
+
+    const scale = maxDimension / Math.max(bitmap.width, bitmap.height);
+    const targetW = Math.max(2, Math.round(bitmap.width * scale));
+    const targetH = Math.max(2, Math.round(bitmap.height * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = targetW;
+    canvas.height = targetH;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return blob;
+    }
+
+    ctx.drawImage(bitmap, 0, 0, targetW, targetH);
+
+    const lowerName = asset.name.toLowerCase();
+    const isJpeg =
+      asset.mimeType === "image/jpeg" ||
+      lowerName.endsWith(".jpg") ||
+      lowerName.endsWith(".jpeg");
+    const outputMime = isJpeg ? "image/jpeg" : "image/png";
+
+    const resized = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, outputMime, isJpeg ? 0.92 : undefined);
+    });
+
+    return resized ?? blob;
+  } catch {
+    return blob;
+  } finally {
+    bitmap?.close();
+  }
+}
+
 /**
  * Coordinates IndexedDB blob loading and spawns export.worker.ts to render MP4 off the main thread.
  */
@@ -63,16 +116,24 @@ export function exportProjectVideo(options: ExportVideoOptions): ExportJobHandle
             throw new Error("Export cancelled by user.");
           }
 
+          onStatus?.("preparing", "Optimizing media for export...");
+
           const blobs: Record<string, Blob> = {};
           for (const id of requiredIds) {
             const found = blobMap.get(id);
+            const asset = mediaAssets[id];
             if (!found) {
-              const name = mediaAssets[id]?.name ?? id;
+              const name = asset?.name ?? id;
               throw new Error(
                 `Media file "${name}" is missing from local IndexedDB.`
               );
             }
-            blobs[id] = found;
+            blobs[id] = asset
+              ? await optimizeImageBlobForExport(found, asset)
+              : found;
+            if (cancelled) {
+              throw new Error("Export cancelled by user.");
+            }
           }
 
           worker = new Worker(

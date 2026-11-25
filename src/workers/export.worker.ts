@@ -1,4 +1,3 @@
-import { FFmpeg } from "@ffmpeg/ffmpeg";
 import {
   buildFFmpegCommand,
   buildMemfsFilename,
@@ -10,6 +9,28 @@ import type {
   ExportWorkerOutboundMessage,
 } from "@/core/ffmpeg/exportTypes";
 
+interface FFmpegCoreFS {
+  writeFile: (path: string, data: Uint8Array) => void;
+  readFile: (path: string, options?: { encoding?: string }) => Uint8Array | string;
+  unlink: (path: string) => void;
+}
+
+interface FFmpegCoreModule {
+  FS: FFmpegCoreFS;
+  exec: (...args: string[]) => number;
+  ffprobe: (...args: string[]) => number;
+  reset: () => void;
+  setTimeout: (timeout: number) => void;
+  setLogger: (callback: (data: { type: string; message: string }) => void) => void;
+  setProgress: (
+    callback: (data: { progress: number; time: number }) => void
+  ) => void;
+}
+
+type FFmpegCoreFactory = (config: {
+  mainScriptUrlOrBlob: string;
+}) => Promise<FFmpegCoreModule>;
+
 interface WorkerScope {
   onmessage: ((event: MessageEvent<ExportWorkerInboundMessage>) => void) | null;
   postMessage: (message: ExportWorkerOutboundMessage) => void;
@@ -17,56 +38,94 @@ interface WorkerScope {
 
 const workerScope = globalThis as unknown as WorkerScope;
 
-let ffmpegSingleton: FFmpeg | null = null;
+let coreSingleton: FFmpegCoreModule | null = null;
 let currentOrigin = "";
+let activeExportDurationSec = 0;
+let recentLogs: string[] = [];
 
 function postOutbound(message: ExportWorkerOutboundMessage): void {
   workerScope.postMessage(message);
 }
 
-async function getLoadedFFmpeg(origin: string): Promise<FFmpeg> {
-  if (ffmpegSingleton && ffmpegSingleton.loaded && currentOrigin === origin) {
-    return ffmpegSingleton;
+function formatError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string" && error.trim().length > 0) {
+    return error;
+  }
+  try {
+    const serialized = JSON.stringify(error);
+    if (serialized && serialized !== "{}") {
+      return serialized;
+    }
+  } catch {
+    // Ignore serialization error
+  }
+  return "Unknown export error.";
+}
+
+async function getLoadedCore(origin: string): Promise<FFmpegCoreModule> {
+  if (coreSingleton && currentOrigin === origin) {
+    return coreSingleton;
   }
 
-  if (ffmpegSingleton) {
-    ffmpegSingleton.terminate();
-    ffmpegSingleton = null;
+  const coreURL = `${origin}/ffmpeg/ffmpeg-core.esm.js`;
+  const wasmURL = `${origin}/ffmpeg/ffmpeg-core.wasm`;
+
+  const imported = (await import(
+    /* webpackIgnore: true */ coreURL
+  )) as { default?: FFmpegCoreFactory };
+
+  const createFFmpegCore = imported.default;
+  if (typeof createFFmpegCore !== "function") {
+    throw new Error(`Failed to load FFmpeg core factory from ${coreURL}`);
   }
 
-  const instance = new FFmpeg();
-  instance.on("log", ({ message }) => {
+  const core = await createFFmpegCore({
+    mainScriptUrlOrBlob: `${coreURL}#${btoa(JSON.stringify({ wasmURL }))}`,
+  });
+
+  core.setLogger(({ message }) => {
+    recentLogs.push(message);
+    if (recentLogs.length > 40) {
+      recentLogs = recentLogs.slice(-40);
+    }
     postOutbound({ type: "LOG", payload: { message } });
   });
-  instance.on("progress", ({ progress, time }) => {
-    const clamped = Math.min(1, Math.max(0, Number.isFinite(progress) ? progress : 0));
-    const timeSec = Number.isFinite(time) ? time / 1_000_000 : 0;
+
+  core.setProgress(({ progress, time }) => {
+    const timeSec = Number.isFinite(time) && time > 0 ? time / 1_000_000 : 0;
+    const computedProgress =
+      activeExportDurationSec > 0 && timeSec > 0
+        ? timeSec / activeExportDurationSec
+        : Number.isFinite(progress)
+          ? progress
+          : 0;
+    const clamped = Math.min(1, Math.max(0, computedProgress));
     postOutbound({
       type: "PROGRESS",
       payload: { progress: clamped, timeSec },
     });
   });
 
-  await instance.load({
-    coreURL: `${origin}/ffmpeg/ffmpeg-core.esm.js`,
-    wasmURL: `${origin}/ffmpeg/ffmpeg-core.wasm`,
-  });
-
-  ffmpegSingleton = instance;
+  coreSingleton = core;
   currentOrigin = origin;
-  return instance;
+  return core;
 }
 
 async function runExport(payload: ExportStartPayload): Promise<void> {
   const { tracks, mediaAssets, blobs, canvas, origin } = payload;
   const memfsFilesToClean = new Set<string>();
+  recentLogs = [];
+  activeExportDurationSec = 0;
 
   postOutbound({
     type: "STATUS",
     payload: { stage: "loading_ffmpeg", message: "Loading FFmpeg.wasm core..." },
   });
 
-  const ffmpeg = await getLoadedFFmpeg(origin);
+  const core = await getLoadedCore(origin);
 
   try {
     postOutbound({
@@ -88,7 +147,7 @@ async function runExport(payload: ExportStartPayload): Promise<void> {
       }
       const memfsName = buildMemfsFilename(asset);
       const bytes = new Uint8Array(await blob.arrayBuffer());
-      await ffmpeg.writeFile(memfsName, bytes);
+      core.FS.writeFile(memfsName, bytes);
       memfsFilesToClean.add(memfsName);
       assetMemfsNames.set(assetId, memfsName);
     }
@@ -104,7 +163,8 @@ async function runExport(payload: ExportStartPayload): Promise<void> {
       const probeFile = `probe_${assetId.replace(/[^a-zA-Z0-9_-]/g, "")}.txt`;
       memfsFilesToClean.add(probeFile);
       try {
-        const exitCode = await ffmpeg.ffprobe([
+        core.setTimeout(-1);
+        const exitCode = core.ffprobe(
           "-v",
           "error",
           "-select_streams",
@@ -115,10 +175,11 @@ async function runExport(payload: ExportStartPayload): Promise<void> {
           "csv=p=0",
           memfsName,
           "-o",
-          probeFile,
-        ]);
+          probeFile
+        );
+        core.reset();
         if (exitCode === 0) {
-          const rawProbe = await ffmpeg.readFile(probeFile);
+          const rawProbe = core.FS.readFile(probeFile);
           const textProbe =
             typeof rawProbe === "string"
               ? rawProbe
@@ -128,6 +189,7 @@ async function runExport(payload: ExportStartPayload): Promise<void> {
           videoHasAudio[assetId] = false;
         }
       } catch {
+        core.reset();
         videoHasAudio[assetId] = false;
       }
     }
@@ -138,6 +200,7 @@ async function runExport(payload: ExportStartPayload): Promise<void> {
       canvas,
       videoHasAudio,
     });
+    activeExportDurationSec = plan.totalDuration;
 
     if (plan.needsFont) {
       const fontResponse = await fetch(`${origin}/fonts/${plan.fontFilename}`);
@@ -147,16 +210,13 @@ async function runExport(payload: ExportStartPayload): Promise<void> {
         );
       }
       const fontBytes = new Uint8Array(await fontResponse.arrayBuffer());
-      await ffmpeg.writeFile(plan.fontFilename, fontBytes);
+      core.FS.writeFile(plan.fontFilename, fontBytes);
       memfsFilesToClean.add(plan.fontFilename);
     }
 
     const encoder = new TextEncoder();
     for (const textFile of plan.textFiles) {
-      await ffmpeg.writeFile(
-        textFile.filename,
-        encoder.encode(textFile.content)
-      );
+      core.FS.writeFile(textFile.filename, encoder.encode(textFile.content));
       memfsFilesToClean.add(textFile.filename);
     }
 
@@ -170,9 +230,15 @@ async function runExport(payload: ExportStartPayload): Promise<void> {
       },
     });
 
-    const execCode = await ffmpeg.exec(plan.args);
+    core.setTimeout(-1);
+    const execCode = core.exec(...plan.args);
+    core.reset();
+
     if (execCode !== 0) {
-      throw new Error(`FFmpeg exited with non-zero code ${execCode}.`);
+      const tail = recentLogs.slice(-6).join(" | ");
+      throw new Error(
+        `FFmpeg exited with code ${execCode}.${tail ? ` Logs: ${tail}` : ""}`
+      );
     }
 
     postOutbound({
@@ -183,7 +249,7 @@ async function runExport(payload: ExportStartPayload): Promise<void> {
       },
     });
 
-    const rawOutput = await ffmpeg.readFile(plan.outputFilename);
+    const rawOutput = core.FS.readFile(plan.outputFilename);
     const outputBytes =
       typeof rawOutput === "string"
         ? new TextEncoder().encode(rawOutput)
@@ -195,10 +261,11 @@ async function runExport(payload: ExportStartPayload): Promise<void> {
       payload: { outputBlob, durationSec: plan.totalDuration },
     });
   } finally {
+    activeExportDurationSec = 0;
     // Strictly clean up all temporary files from FFmpeg MEMFS
     for (const filename of memfsFilesToClean) {
       try {
-        await ffmpeg.deleteFile(filename);
+        core.FS.unlink(filename);
       } catch {
         // Continue deleting remaining files even if one was not created
       }
@@ -210,10 +277,7 @@ workerScope.onmessage = (event: MessageEvent<ExportWorkerInboundMessage>) => {
   const message = event.data;
 
   if (message.type === "CANCEL_EXPORT") {
-    if (ffmpegSingleton) {
-      ffmpegSingleton.terminate();
-      ffmpegSingleton = null;
-    }
+    coreSingleton = null;
     postOutbound({
       type: "ERROR",
       payload: { message: "Export cancelled by user." },
@@ -223,11 +287,9 @@ workerScope.onmessage = (event: MessageEvent<ExportWorkerInboundMessage>) => {
 
   if (message.type === "START_EXPORT") {
     void runExport(message.payload).catch((error: unknown) => {
-      const errorMessage =
-        error instanceof Error ? error.message : "Unknown export error.";
       postOutbound({
         type: "ERROR",
-        payload: { message: errorMessage },
+        payload: { message: formatError(error) },
       });
     });
   }

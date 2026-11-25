@@ -20,6 +20,8 @@ const IMAGE_EXTENSIONS = new Set([
   ".webp",
   ".gif",
   ".bmp",
+  ".heic",
+  ".heif",
 ]);
 
 export interface ExtractedMediaMetadata {

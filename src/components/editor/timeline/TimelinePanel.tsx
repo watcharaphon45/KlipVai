@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import {
+  ClipboardPaste,
+  Copy,
+  CopyPlus,
   Pause,
   Play,
   Plus,
@@ -41,6 +44,7 @@ export function TimelinePanel() {
   const isPlaying = useTimelineStore((s) => s.isPlaying);
   const pixelsPerSecond = useTimelineStore((s) => s.pixelsPerSecond);
   const selectedItemId = useTimelineStore((s) => s.selectedItemId);
+  const clipboardItem = useTimelineStore((s) => s.clipboardItem);
 
   const togglePlay = useTimelineStore((s) => s.togglePlay);
   const setIsPlaying = useTimelineStore((s) => s.setIsPlaying);
@@ -48,6 +52,11 @@ export function TimelinePanel() {
   const setPixelsPerSecond = useTimelineStore((s) => s.setPixelsPerSecond);
   const splitItemAtPlayhead = useTimelineStore((s) => s.splitItemAtPlayhead);
   const removeItem = useTimelineStore((s) => s.removeItem);
+  const copySelectedItem = useTimelineStore((s) => s.copySelectedItem);
+  const pasteClipboardItem = useTimelineStore((s) => s.pasteClipboardItem);
+  const duplicateSelectedItem = useTimelineStore(
+    (s) => s.duplicateSelectedItem
+  );
   const addTrack = useTimelineStore((s) => s.addTrack);
   const reorderTracks = useTimelineStore((s) => s.reorderTracks);
   const addItem = useTimelineStore((s) => s.addItem);
@@ -364,6 +373,29 @@ export function TimelinePanel() {
         return;
       }
 
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+        const hasSelectionText = Boolean(window.getSelection()?.toString());
+        if (!hasSelectionText && useTimelineStore.getState().selectedItemId) {
+          e.preventDefault();
+          copySelectedItem();
+        }
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
+        if (useTimelineStore.getState().clipboardItem) {
+          e.preventDefault();
+          pasteClipboardItem();
+        }
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        duplicateSelectedItem();
+        return;
+      }
+
       if (e.key.toLowerCase() === "s" && !e.ctrlKey && !e.metaKey) {
         e.preventDefault();
         splitItemAtPlayhead();
@@ -381,7 +413,14 @@ export function TimelinePanel() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [removeItem, splitItemAtPlayhead, togglePlay]);
+  }, [
+    copySelectedItem,
+    duplicateSelectedItem,
+    pasteClipboardItem,
+    removeItem,
+    splitItemAtPlayhead,
+    togglePlay,
+  ]);
 
   const handleAddSampleTextClip = (): void => {
     let textTrack = tracks.find((t) => t.type === "text" && !t.isLocked);
@@ -462,6 +501,39 @@ export function TimelinePanel() {
           >
             <Scissors className="h-3.5 w-3.5" />
             Split
+          </button>
+
+          <button
+            type="button"
+            onClick={() => copySelectedItem()}
+            disabled={!selectedItemId}
+            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-zinc-200 transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+            title="Copy selected clip (Ctrl+C)"
+          >
+            <Copy className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Copy</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => pasteClipboardItem()}
+            disabled={!clipboardItem}
+            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-zinc-200 transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+            title="Paste clip at playhead (Ctrl+V)"
+          >
+            <ClipboardPaste className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Paste</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => duplicateSelectedItem()}
+            disabled={!selectedItemId}
+            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-zinc-200 transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+            title="Duplicate clip next to original (Ctrl+D)"
+          >
+            <CopyPlus className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Duplicate</span>
           </button>
 
           <button

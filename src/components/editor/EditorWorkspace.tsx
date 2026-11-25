@@ -231,10 +231,10 @@ export function EditorWorkspace() {
         </p>
         <p>
           <span className="text-amber-300">รูปภาพ:</span> PNG, JPG, JPEG, WebP,
-          GIF, BMP
+          GIF, BMP, HEIC, HEIF
         </p>
         <p className="mt-1 text-[10px] text-zinc-500">
-          * เก็บไฟล์ใน IndexedDB ของเบราว์เซอร์เท่านั้น (ไม่อัปโหลดขึ้นเซิร์ฟเวอร์)
+          * เก็บไฟล์ใน IndexedDB ของเบราว์เซอร์เท่านั้น (HEIC/HEIF จะถูกแปลงเป็น JPG บนเครื่องอัตโนมัติ)
         </p>
       </div>
 
@@ -395,7 +395,7 @@ export function EditorWorkspace() {
             ref={fileInputRef}
             type="file"
             multiple
-            accept="video/*,audio/*,image/*,.mp4,.mov,.webm,.mkv,.m4v,.mp3,.wav,.aac,.m4a,.ogg,.flac,.png,.jpg,.jpeg,.webp,.gif,.bmp"
+            accept="video/*,audio/*,image/*,image/heic,image/heif,.mp4,.mov,.webm,.mkv,.m4v,.mp3,.wav,.aac,.m4a,.ogg,.flac,.png,.jpg,.jpeg,.webp,.gif,.bmp,.heic,.heif"
             className="hidden"
             onChange={handleImportFiles}
           />
@@ -403,7 +403,7 @@ export function EditorWorkspace() {
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={isImporting}
-            title="รองรับไฟล์: Video (MP4, MOV, WebM, MKV, M4V), Audio (MP3, WAV, AAC, M4A, OGG, FLAC), Image (PNG, JPG, JPEG, WebP, GIF, BMP)"
+            title="รองรับไฟล์: Video (MP4, MOV, WebM, MKV, M4V), Audio (MP3, WAV, AAC, M4A, OGG, FLAC), Image (PNG, JPG, JPEG, WebP, GIF, BMP, HEIC, HEIF)"
             className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-500 disabled:opacity-50 sm:px-3"
           >
             <Upload className="h-3.5 w-3.5" />

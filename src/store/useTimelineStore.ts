@@ -16,6 +16,7 @@ import {
   loadMediaFromLocal,
   saveMediaToLocal,
 } from "@/core/storage/localDb";
+import { normalizeMediaFileForBrowser } from "@/core/storage/heicConverter";
 import {
   extractVideoMetadata,
   matchRelinkFile,
@@ -128,6 +129,12 @@ export interface TimelineActions {
   trimItemRight: (itemId: string, newDuration: number) => void;
   splitItemAtPlayhead: (itemId?: string) => [TimelineItem, TimelineItem] | null;
   removeItem: (itemId: string) => void;
+  copySelectedItem: (itemId?: string) => TimelineItem | null;
+  pasteClipboardItem: (options?: {
+    targetTrackId?: string;
+    atTime?: number;
+  }) => TimelineItem | null;
+  duplicateSelectedItem: (itemId?: string) => TimelineItem | null;
 
   // Playback, Zoom, Selection
   setCurrentTime: (time: number) => void;
@@ -139,12 +146,37 @@ export interface TimelineActions {
   setCanvasFps: (fps: number) => void;
 }
 
-export type TimelineStore = ProjectState & TimelineActions;
+export interface TimelineStoreExtras {
+  clipboardItem: TimelineItem | null;
+}
+
+export type TimelineStore = ProjectState & TimelineStoreExtras & TimelineActions;
+
+function cloneTimelineItem(item: TimelineItem): TimelineItem {
+  return {
+    ...item,
+    textStyle: item.textStyle ? { ...item.textStyle } : undefined,
+  };
+}
+
+function getDefaultTrackTypeForItem(itemType: TimelineItem["type"]): TrackType {
+  if (itemType === "audio") {
+    return "audio";
+  }
+  if (itemType === "text") {
+    return "text";
+  }
+  if (itemType === "image") {
+    return "overlay";
+  }
+  return "video";
+}
 
 export const useTimelineStore = create<TimelineStore>()(
   temporal(
     (set, get) => ({
       ...createInitialState(),
+      clipboardItem: null,
 
       setProjectMeta: (projectId, projectName) => {
         set({ projectId, projectName });
@@ -204,6 +236,7 @@ export const useTimelineStore = create<TimelineStore>()(
           isPlaying: false,
           selectedItemId: null,
           selectedTrackId: null,
+          clipboardItem: null,
         });
 
         useTimelineStore.temporal.getState().clear();
@@ -251,20 +284,24 @@ export const useTimelineStore = create<TimelineStore>()(
 
       resetProject: () => {
         revokeAllAssetUrls(get().mediaAssets);
-        set(createInitialState());
+        set({
+          ...createInitialState(),
+          clipboardItem: null,
+        });
         useTimelineStore.temporal.getState().clear();
       },
 
       importMediaFile: async (file) => {
-        const extracted = await extractVideoMetadata(file);
+        const normalizedFile = await normalizeMediaFileForBrowser(file);
+        const extracted = await extractVideoMetadata(normalizedFile);
         const assetId = uuidv4();
 
-        await saveMediaToLocal(assetId, file, {
+        await saveMediaToLocal(assetId, normalizedFile, {
           fileName: extracted.name,
           mimeType: extracted.mimeType,
         });
 
-        const blobUrl = URL.createObjectURL(file);
+        const blobUrl = URL.createObjectURL(normalizedFile);
         const newAsset: MediaAsset = {
           id: assetId,
           name: extracted.name,
@@ -945,6 +982,117 @@ export const useTimelineStore = create<TimelineStore>()(
               state.selectedItemId === itemId ? null : state.selectedItemId,
           };
         });
+      },
+
+      copySelectedItem: (itemId) => {
+        const state = get();
+        const targetId = itemId ?? state.selectedItemId;
+        if (!targetId) {
+          return null;
+        }
+
+        for (const track of state.tracks) {
+          const found = track.items.find((item) => item.id === targetId);
+          if (found) {
+            const copied = cloneTimelineItem(found);
+            set({ clipboardItem: copied });
+            return copied;
+          }
+        }
+        return null;
+      },
+
+      pasteClipboardItem: (options) => {
+        const state = get();
+        const clipboard = state.clipboardItem;
+        if (!clipboard) {
+          return null;
+        }
+
+        const candidateTrackIds = [
+          options?.targetTrackId,
+          state.selectedTrackId,
+          clipboard.trackId,
+        ].filter((id): id is string => Boolean(id));
+
+        let destinationTrack: TimelineTrack | undefined;
+
+        for (const candidateId of candidateTrackIds) {
+          const found = state.tracks.find(
+            (t) =>
+              t.id === candidateId &&
+              !t.isLocked &&
+              isItemCompatibleWithTrack(clipboard.type, t.type)
+          );
+          if (found) {
+            destinationTrack = found;
+            break;
+          }
+        }
+
+        if (!destinationTrack) {
+          destinationTrack = state.tracks.find(
+            (t) =>
+              !t.isLocked && isItemCompatibleWithTrack(clipboard.type, t.type)
+          );
+        }
+
+        if (!destinationTrack) {
+          const defaultType = getDefaultTrackTypeForItem(clipboard.type);
+          destinationTrack = state.addTrack(defaultType);
+        }
+
+        const { id: _oldId, trackId: _oldTrackId, ...rest } =
+          cloneTimelineItem(clipboard);
+        void _oldId;
+        void _oldTrackId;
+
+        const pasted = get().addItem(destinationTrack.id, {
+          ...rest,
+          start: options?.atTime ?? state.currentTime,
+        });
+
+        if (pasted) {
+          set({
+            selectedItemId: pasted.id,
+            selectedTrackId: destinationTrack.id,
+          });
+        }
+        return pasted;
+      },
+
+      duplicateSelectedItem: (itemId) => {
+        const state = get();
+        const targetId = itemId ?? state.selectedItemId;
+        if (!targetId) {
+          return null;
+        }
+
+        for (const track of state.tracks) {
+          if (track.isLocked) {
+            continue;
+          }
+          const found = track.items.find((item) => item.id === targetId);
+          if (found) {
+            const { id: _oldId, trackId: _oldTrackId, ...rest } =
+              cloneTimelineItem(found);
+            void _oldId;
+            void _oldTrackId;
+
+            const duplicated = get().addItem(track.id, {
+              ...rest,
+              start: found.start + found.duration,
+            });
+            if (duplicated) {
+              set({
+                selectedItemId: duplicated.id,
+                selectedTrackId: track.id,
+              });
+            }
+            return duplicated;
+          }
+        }
+        return null;
       },
 
       setCurrentTime: (time) => {

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="klipvai-bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#4f46e5" />
+      <stop offset="100%" stop-color="#7c3aed" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#klipvai-bg)" />
+  <!-- 9:16 vertical frame with clapperboard top bar -->
+  <rect x="19" y="10" width="26" height="44" rx="4.5" stroke="#ffffff" stroke-width="3" fill="rgba(9, 9, 11, 0.25)" />
+  <line x1="19" y1="18" x2="45" y2="18" stroke="#ffffff" stroke-width="2.5" />
+  <line x1="25" y1="10.5" x2="29" y2="17.5" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" />
+  <line x1="34" y1="10.5" x2="38" y2="17.5" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" />
+  <!-- Play triangle -->
+  <path d="M28 28.5L38.5 34.5L28 40.5V28.5Z" fill="#ffffff" />
+</svg>
